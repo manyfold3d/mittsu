@@ -10,9 +10,6 @@ module Mittsu
 
     def initialize(manager = DefaultLoadingManager)
       @manager = manager
-      @group = Group.new
-      @vertex_count = 0
-      @line_num = 0
       @_listeners = {}
     end
 
@@ -24,6 +21,7 @@ module Mittsu
     end
 
     def parse(data)
+      reset_loader_vars
       stream = StringIO.new(data, "rb")
       # Load STL header (first 80 bytes max)
       header = stream.read(80)
@@ -37,6 +35,13 @@ module Mittsu
     end
 
     private
+
+    def reset_loader_vars
+      @vertex_hash = {}
+      @vertex_count = 0
+      @line_num = 0
+      @group = Group.new
+    end
 
     def parse_ascii(stream)
       while line = read_line(stream)
@@ -88,9 +93,10 @@ module Mittsu
         end
       end
       return nil if vertices.length != 3
-      face = Face3.new(@vertex_count, @vertex_count+1, @vertex_count+2, normal)
-      @vertex_count += 3
-      return vertices, face
+      # Merge with existing vertices
+      face, new_vertices = face_with_merged_vertices(vertices)
+      face.normal = normal
+      return new_vertices, face
     end
 
     def parse_binary(stream)
@@ -101,23 +107,57 @@ module Mittsu
         # Face normal
         normal = read_binary_vector(stream)
         # Vertices
-        vertices << read_binary_vector(stream)
-        vertices << read_binary_vector(stream)
-        vertices << read_binary_vector(stream)
+        face_vertices = []
+        face_vertices << read_binary_vector(stream)
+        face_vertices << read_binary_vector(stream)
+        face_vertices << read_binary_vector(stream)
         # Throw away the attribute bytes
         stream.read(2)
         # Store data
-        faces << Face3.new(@vertex_count, @vertex_count+1, @vertex_count+2, normal)
-        @vertex_count += 3
+        face, new_vertices = face_with_merged_vertices(face_vertices)
+        face.normal = normal
+        faces << face
+        vertices += new_vertices
       end
       add_mesh vertices, faces
+    end
+
+    def face_with_merged_vertices(vertices)
+      new_vertices = []
+      indices = []
+      vertices.each do |v|
+        index, is_new = vertex_index(v)
+        indices << index
+        if is_new
+          new_vertices << v
+          @vertex_count += 1
+        end
+      end
+      # Return face and new vertex list
+      return Face3.new(
+        indices[0],
+        indices[1],
+        indices[2]
+      ), new_vertices
+    end
+
+    def vertex_index(vertex)
+      key = vertex_key(vertex)
+      if i = @vertex_hash[key]
+        return i, false
+      else
+        return (@vertex_hash[key] = @vertex_count), true
+      end
+    end
+
+    def vertex_key(vertex)
+      vertex.elements.pack("D*")
     end
 
     def add_mesh(vertices, faces)
       geometry = Geometry.new
       geometry.vertices = vertices
       geometry.faces = faces
-      geometry.merge_vertices
       geometry.compute_bounding_sphere
       @group.add Mesh.new(geometry)
     end
